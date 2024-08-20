@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -26,9 +27,24 @@ type StaticNetworkConfigData struct {
 	FileContents string
 }
 
+type Interface struct {
+	Name string `yaml:"name"`
+	Type string `yaml:"type"`
+	VLAN *VLAN  `yaml:"vlan,omitempty"`
+}
+
+type VLAN struct {
+	BaseIface string `yaml:"base-iface"`
+	ID        int    `yaml:"id"`
+}
+type InterfaceConfig struct {
+	Interfaces []Interface `json:"interfaces"`
+}
+
 //go:generate mockgen -source=generator.go -package=staticnetworkconfig -destination=mock_generator.go
 type StaticNetworkConfig interface {
 	GenerateStaticNetworkConfigData(ctx context.Context, hostsYAMLS string) ([]StaticNetworkConfigData, error)
+	GenerateStaticNetworkConfigDataYAML(string2 string) ([]StaticNetworkConfigData, error)
 	FormatStaticNetworkConfigForDB(staticNetworkConfig []*models.HostStaticNetworkConfig) (string, error)
 	ValidateStaticConfigParams(staticNetworkConfig []*models.HostStaticNetworkConfig) error
 }
@@ -43,6 +59,92 @@ func New(log logrus.FieldLogger) StaticNetworkConfig {
 		log:     log,
 		nmstate: nmstate.New(),
 	}
+}
+
+func (s *StaticNetworkConfigGenerator) GenerateStaticNetworkConfigDataYAML(staticNetworkConfigStr string) ([]StaticNetworkConfigData, error) {
+	var filesList []StaticNetworkConfigData
+	staticNetworkConfig, err := s.decodeStaticNetworkConfig(staticNetworkConfigStr)
+	if err != nil {
+		s.log.WithError(err).Errorf("Failed to decode static network config")
+		return nil, err
+	}
+
+	for i, hostConfig := range staticNetworkConfig {
+		//Change the nmstate YAML to nmpolicy file
+
+		// Extract MAC address and interface name
+		interfacesWithCaptures := hostConfig.NetworkYaml
+
+		var config InterfaceConfig
+
+		// Unmarshal the JSON string into the config struct
+		err = yaml.Unmarshal([]byte(interfacesWithCaptures), &config)
+		if err != nil {
+			fmt.Println("Error unmarshalling JSON:", err)
+			return nil, err
+		}
+
+		nameToType := make(map[string]string)
+		for _, iface := range config.Interfaces {
+			if iface.Type == "vlan" {
+				nameToType[iface.VLAN.BaseIface] = iface.Type
+			} else {
+				nameToType[iface.Name] = iface.Type
+			}
+		}
+
+		var captureSection []string
+
+		for j, mac := range hostConfig.MacInterfaceMap {
+			macAddress := mac.MacAddress
+			interfaceName := mac.LogicalNicName
+
+			// Generate capture section
+			captureSection = append(captureSection, fmt.Sprintf("  iface%d: interfaces.mac-address == \"%s\"", j, macAddress))
+
+			var modifiedInterfaceConfig string
+			if val, exists := nameToType[mac.LogicalNicName]; exists && val == "vlan" {
+				re := regexp.MustCompile(fmt.Sprintf("base-iface: %s", interfaceName))
+				modifiedInterfaceConfig = re.ReplaceAllString(interfacesWithCaptures, fmt.Sprintf(`base-iface: "{{ capture.iface%d.interfaces.0.name }}"`, j))
+			} else {
+				re := regexp.MustCompile(fmt.Sprintf("%s", interfaceName))
+				modifiedInterfaceConfig = re.ReplaceAllString(interfacesWithCaptures, fmt.Sprintf(`"{{ capture.iface%d.interfaces.0.name }}"`, j))
+
+			}
+
+			// Add indentation to the modifiedInterfaceConfig
+			var indentedConfig []string
+			for _, line := range strings.Split(modifiedInterfaceConfig, "\n") {
+				// Check if line is non-empty and add indentation
+				if strings.TrimSpace(line) != "" {
+					indentedConfig = append(indentedConfig, "  "+line)
+				}
+			}
+			interfacesWithCaptures = strings.Join(indentedConfig, "\n")
+		}
+
+		// Generate desiredState section
+		desiredStateSection := fmt.Sprintf("\ndesiredState:\n")
+
+		// Combine the sections
+		finalOutput := "capture:\n" + strings.Join(captureSection, "\n") + desiredStateSection + interfacesWithCaptures
+
+		// create and add the ini file
+		macInterfaceMapping := s.formatMacInterfaceMap(hostConfig.MacInterfaceMap)
+		mapConfigData := StaticNetworkConfigData{
+			FilePath:     filepath.Join(fmt.Sprintf("host%d", i), "mac_interface.ini"),
+			FileContents: macInterfaceMapping,
+		}
+		filesList = append(filesList, mapConfigData)
+
+		// add the yaml file
+		newFile := StaticNetworkConfigData{
+			FilePath:     filepath.Join(filepath.Join(fmt.Sprintf("host%d", i), fmt.Sprintf("ymlFile%d.yml", i))),
+			FileContents: finalOutput,
+		}
+		filesList = append(filesList, newFile)
+	}
+	return filesList, nil
 }
 
 func (s *StaticNetworkConfigGenerator) GenerateStaticNetworkConfigData(ctx context.Context, staticNetworkConfigStr string) ([]StaticNetworkConfigData, error) {

@@ -19,3 +19,5 @@ const DNSWildcardFalseDomainName = "validateNoWildcardDNS"
 
 // Plain http machine config server port
 const InsecureMCSPort = 22624
+
+const MinimalVersionForNmstatectl = "4.13"

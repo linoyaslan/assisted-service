@@ -14,6 +14,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/hashicorp/go-version"
 	clusterPkg "github.com/openshift/assisted-service/internal/cluster"
 	"github.com/openshift/assisted-service/internal/common"
 	"github.com/openshift/assisted-service/internal/constants"
@@ -297,13 +298,34 @@ func (ib *ignitionBuilder) FormatDiscoveryIgnitionFile(ctx context.Context, infr
 		isoType = string(common.ImageTypeValue(infraEnv.Type))
 	}
 	if infraEnv.StaticNetworkConfig != "" && models.ImageType(isoType) == models.ImageTypeFullIso {
-		filesList, newErr := ib.prepareStaticNetworkConfigForIgnition(ctx, infraEnv)
+		var filesList []staticnetworkconfig.StaticNetworkConfigData
+		var newErr error
+
+		// backward compatibility - nmstate.service has been available on RHCOS since version 4.13+, therefore, we should maintain both flows
+		ocpVersion, err := version.NewVersion(infraEnv.OpenshiftVersion)
+		if err != nil {
+			return "", errors.Errorf("Failed to parse OCP version")
+		}
+		minimalVersionForNmstatectl, err := version.NewVersion(constants.MinimalVersionForNmstatectl)
+		if err != nil {
+			return "", errors.Errorf("Failed to parse OCP version")
+		}
+		if ocpVersion.GreaterThanOrEqual(minimalVersionForNmstatectl) {
+			ib.log.Infof("LINOY ocp version greater than or equal to 4.13")
+			filesList, newErr = ib.prepareStaticNetworkConfigYAMLForIgnition(infraEnv)
+			ignitionParams["StaticNetworkConfigWithNmstatectl"] = filesList
+			ignitionParams["PreNetworkConfigScript"] = base64.StdEncoding.EncodeToString([]byte(constants.PreNetworkConfigScriptWithNmstatectl))
+		} else {
+			ib.log.Infof("LINOY ocp version is less than 4.13")
+			filesList, newErr = ib.prepareStaticNetworkConfigForIgnition(ctx, infraEnv)
+			ignitionParams["StaticNetworkConfig"] = filesList
+			ignitionParams["PreNetworkConfigScript"] = base64.StdEncoding.EncodeToString([]byte(constants.PreNetworkConfigScript))
+		}
+
 		if newErr != nil {
 			ib.log.WithError(newErr).Errorf("Failed to add static network config to ignition for infra env  %s", infraEnv.ID)
 			return "", newErr
 		}
-		ignitionParams["StaticNetworkConfig"] = filesList
-		ignitionParams["PreNetworkConfigScript"] = base64.StdEncoding.EncodeToString([]byte(constants.PreNetworkConfigScript))
 	}
 
 	if ib.mirrorRegistriesBuilder.IsMirrorRegistriesConfigured() {
@@ -351,6 +373,20 @@ func (ib *ignitionBuilder) FormatDiscoveryIgnitionFile(ctx context.Context, infr
 	}
 
 	return res, nil
+}
+
+func (ib *ignitionBuilder) prepareStaticNetworkConfigYAMLForIgnition(infraEnv *common.InfraEnv) ([]staticnetworkconfig.StaticNetworkConfigData, error) {
+	filesList, err := ib.staticNetworkConfig.GenerateStaticNetworkConfigDataYAML(infraEnv.StaticNetworkConfig)
+	if err != nil {
+		ib.log.WithError(err).Errorf("staticNetworkGenerator failed to produce the static network connection files for cluster %s", infraEnv.ID)
+		return nil, err
+	}
+	for i := range filesList {
+		filesList[i].FilePath = filepath.Join(tempNMConnectionsDir, filesList[i].FilePath)
+		filesList[i].FileContents = base64.StdEncoding.EncodeToString([]byte(filesList[i].FileContents))
+	}
+
+	return filesList, nil
 }
 
 func (ib *ignitionBuilder) prepareStaticNetworkConfigForIgnition(ctx context.Context, infraEnv *common.InfraEnv) ([]staticnetworkconfig.StaticNetworkConfigData, error) {

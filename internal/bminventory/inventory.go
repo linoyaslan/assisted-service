@@ -3700,8 +3700,28 @@ func (b *bareMetalInventory) DownloadMinimalInitrd(ctx context.Context, params i
 	}
 
 	var netFiles []staticnetworkconfig.StaticNetworkConfigData
+	var scriptContent, serviceContent string
 	if infraEnv.StaticNetworkConfig != "" {
-		netFiles, err = b.staticNetworkConfig.GenerateStaticNetworkConfigData(ctx, infraEnv.StaticNetworkConfig)
+		// backward compatibility - nmstate.service has been available on RHCOS since version 4.13+, therefore, we should maintain both flows
+		ocpVersion, err := version.NewVersion(infraEnv.OpenshiftVersion)
+		if err != nil {
+			return common.GenerateErrorResponder(errors.Errorf("Failed to parse OCP version"))
+		}
+		minimalVersionForNmstatectl, err := version.NewVersion(constants.MinimalVersionForNmstatectl)
+		if err != nil {
+			return common.GenerateErrorResponder(errors.Errorf("Failed to parse OCP version"))
+		}
+		if ocpVersion.GreaterThanOrEqual(minimalVersionForNmstatectl) {
+			b.log.Infof("LINOY ocp version greater than or equal to 4.13")
+			netFiles, err = b.staticNetworkConfig.GenerateStaticNetworkConfigDataYAML(infraEnv.StaticNetworkConfig)
+			scriptContent = constants.PreNetworkConfigScriptWithNmstatectl
+			serviceContent = constants.MinimalISONetworkConfigServiceNmstatectl
+		} else {
+			netFiles, err = b.staticNetworkConfig.GenerateStaticNetworkConfigData(ctx, infraEnv.StaticNetworkConfig)
+			b.log.Infof("LINOY ocp version less than 4.13")
+			scriptContent = constants.PreNetworkConfigScript
+			serviceContent = constants.MinimalISONetworkConfigService
+		}
 		if err != nil {
 			log.WithError(err).Errorf("Failed to create static network config data")
 			return common.GenerateErrorResponder(err)
@@ -3715,7 +3735,7 @@ func (b *bareMetalInventory) DownloadMinimalInitrd(ctx context.Context, params i
 		NoProxy:    noProxy,
 	}
 
-	minimalInitrd, err := isoeditor.RamdiskImageArchive(netFiles, &infraEnvProxyInfo)
+	minimalInitrd, err := isoeditor.RamdiskImageArchive(netFiles, &infraEnvProxyInfo, scriptContent, serviceContent)
 	if err != nil {
 		log.WithError(err).Error("Failed to create ramdisk image archive")
 		return common.GenerateErrorResponder(err)
@@ -5838,8 +5858,24 @@ func (b *bareMetalInventory) V2DownloadInfraEnvFiles(ctx context.Context, params
 		}
 		filename = fmt.Sprintf("%s-%s", params.InfraEnvID, params.FileName)
 	case "static-network-config":
+		var netFiles []staticnetworkconfig.StaticNetworkConfigData
 		if infraEnv.StaticNetworkConfig != "" {
-			netFiles, err := b.staticNetworkConfig.GenerateStaticNetworkConfigData(ctx, infraEnv.StaticNetworkConfig)
+			// backward compatibility - nmstate.service has been available on RHCOS since version 4.13+, therefore, we should maintain both flows
+			ocpVersion, err := version.NewVersion(infraEnv.OpenshiftVersion)
+			if err != nil {
+				return common.GenerateErrorResponder(errors.Errorf("Failed to parse OCP version"))
+			}
+			minimalVersionForNmstatectl, err := version.NewVersion(constants.MinimalVersionForNmstatectl)
+			if err != nil {
+				return common.GenerateErrorResponder(errors.Errorf("Failed to parse OCP version"))
+			}
+			if ocpVersion.GreaterThanOrEqual(minimalVersionForNmstatectl) {
+				b.log.Infof("LINOY ocp version greater than or equal to 4.13")
+				netFiles, err = b.staticNetworkConfig.GenerateStaticNetworkConfigDataYAML(infraEnv.StaticNetworkConfig)
+			} else {
+				b.log.Infof("LINOY ocp version less than to 4.13")
+				netFiles, err = b.staticNetworkConfig.GenerateStaticNetworkConfigData(ctx, infraEnv.StaticNetworkConfig)
+			}
 			if err != nil {
 				b.log.WithError(err).Errorf("Failed to create static network config data")
 				return common.GenerateErrorResponder(err)
