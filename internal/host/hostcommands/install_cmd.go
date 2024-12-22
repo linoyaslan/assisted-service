@@ -400,7 +400,7 @@ func appendMultipathArgs(installerArgs []string, installationDisk *models.Disk) 
 	if installationDisk.DriveType != models.DriveTypeMultipath {
 		return installerArgs
 	}
-	return append(installerArgs, "--append-karg", "root=/dev/disk/by-label/dm-mpath-root", "--append-karg", "rw", "--append-karg", "rd.multipath=default")
+	return append(installerArgs, "--append-karg", "root=/dev/disk/by-label/dm-mpath-root", "--append-karg", "rw", "--append-karg", "rd.multipath=default", "--append-karg", "rd.iscsi.firmware=1")
 }
 
 func appends390xArgs(inventory *models.Inventory, installerArgs []string, log logrus.FieldLogger) ([]string, bool) {

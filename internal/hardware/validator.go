@@ -148,23 +148,23 @@ func (v *validator) DiskIsEligible(ctx context.Context, disk *models.Disk, infra
 	}
 
 	// We only allow multipath if all paths are FC
-	if disk.DriveType == models.DriveTypeMultipath {
-		for _, inventoryDisk := range inventory.Disks {
-			if lo.Contains(strings.Split(inventoryDisk.Holders, ","), disk.Name) {
-				if inventoryDisk.DriveType != models.DriveTypeFC {
-					notEligibleReasons = append(notEligibleReasons,
-						fmt.Sprintf(wrongMultipathTypeTemplate, inventoryDisk.DriveType, string(models.DriveTypeFC)))
-					break
-				}
-			}
-		}
-	}
+	//if disk.DriveType == models.DriveTypeMultipath {
+	//	for _, inventoryDisk := range inventory.Disks {
+	//		if lo.Contains(strings.Split(inventoryDisk.Holders, ","), disk.Name) {
+	//			if inventoryDisk.DriveType != models.DriveTypeFC {
+	//				notEligibleReasons = append(notEligibleReasons,
+	//					fmt.Sprintf(wrongMultipathTypeTemplate, inventoryDisk.DriveType, string(models.DriveTypeFC)))
+	//				break
+	//			}
+	//		}
+	//	}
+	//}
 
 	if disk.DriveType == models.DriveTypeISCSI {
-		err := areISCSIHoldersValid(disk, inventory)
-		if err != nil {
-			notEligibleReasons = append(notEligibleReasons, err.Error())
-		}
+		//err := areISCSIHoldersValid(disk, inventory)
+		//if err != nil {
+		//	notEligibleReasons = append(notEligibleReasons, err.Error())
+		//}
 
 		// Check if network is configured properly to install on iSCSI boot drive
 		err = isISCSINetworkingValid(disk, inventory)
